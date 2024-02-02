@@ -101,7 +101,6 @@ const byte zero = 0x00;
 
 unsigned int NixieArray[10]={1, 2, 4, 8, 16, 32, 64, 128, 256, 512}; // This helps us convert from a single digit decimal (index) to the appropriate binary mask
 
-int colons = 0;
 int last_second = 0;
 
 /***********************************************************************************************
@@ -120,6 +119,7 @@ void updateTubes(const DateTime &now);
 
 // Helper functions
 String PreZero(int digit);
+int hours24to12(int hours24);
 
 // RTC functions
 void showDateTime();
@@ -136,6 +136,9 @@ ClickButton downButton(pinDown, LOW, CLICKBTN_PULLUP);
 * * * * * * * * * * * * * * * * * * * * Init Program * * * * * * * * * * * * * * * * * * * * * *
 ************************************************************************************************/
 
+/**
+ * @brief Setup function, runs once before program loops. 
+*/
 void setup()
 {
   // Stop all interrupts
@@ -178,29 +181,39 @@ void setup()
   downButton.multiclickTime = 30;  // Time limit for multi clicks
   downButton.longClickTime  = 2000; // time until "held-down clicks" register
 
+  // Quick wipe-across test of all nixie elements
   startupTubes();
 
+  // Start up the hardware timer(s) to be used for interrupts
   setupTimers();
-
-  last_second = dt_now.second();
 
   // Turn all LEDs light purple
   analogWrite(RedLedPin,50);
   analogWrite(GreenLedPin,0);
   analogWrite(BlueLedPin,50);
 
+  // grab the current second to start comparing in the loop.
+  last_second = dt_now.second();
+
 }
 
+/**
+ * @brief Main program loop. 
+*/
 void loop()
 {
   dt_now = rtc.now();
   if (last_second != dt_now.second())
   {
-    colons = !colons;
     updateTubes(dt_now);
     last_second = dt_now.second();
   }
-  
+
+  if (dt_now.second() % 30 == 0)
+  {
+    startupTubes();
+  }
+
   //Serial.print("Hours:");
   //Serial.print(PreZero(now.hour()));
   //_delay_ms(500);
@@ -228,6 +241,9 @@ void SPISetup()
   }
 }
 
+/**
+ * @brief Init hardware timer and enable interrupts. 
+*/
 void setupTimers()
 {
 
@@ -261,7 +277,7 @@ void setupTimers()
 }
 
 /**
- * @brief Function to test some routines with the high voltage shift register. 
+ * @brief Quickly test all tube elements. 
 */
 void startupTubes()
 {
@@ -329,6 +345,9 @@ void startupTubes()
 
 }
 
+/**
+ * @brief Apphend a leading zero to an int if it is one digit. 
+*/
 String PreZero(int digit)
 {
   digit = abs(digit);
@@ -336,6 +355,17 @@ String PreZero(int digit)
   else return String(digit);
 }
 
+/**
+ * @brief Convert 24 hour time format to 12 hour format (loses AM/PM data)
+*/
+int hours24to12(int hours24)
+{
+  return hours24 == 0 ? 12 : hours24 <= 12 ? hours24 : hours24 - 12;
+}
+
+/**
+ * @brief Prints full time and data data, formatted, over serial. 
+*/
 void showDateTime()
 {
   DateTime dt = rtc.now();
@@ -355,6 +385,9 @@ void showDateTime()
   Serial.println();
 }
 
+/**
+ * @brief ISR triggered by hardware timer 4 overload. 
+*/
 ISR(TIMER4_COMPA_vect)
 {
   //cli();
@@ -369,43 +402,22 @@ ISR(TIMER4_COMPA_vect)
   
 }
 
+/**
+ * @brief Function that updates the state of the nixie tubes against the passed-in DateTime object. 
+*/
 void updateTubes(const DateTime &now)
 {
   digitalWrite(LEpin, LOW);
 
-  unsigned long chhm = 0; // data structure for colon 1, hour ones, hour tens, and minute tens
+  unsigned long cmhh = 0; // data structure for colon 1, minute tens, hour ones, hour tens
   unsigned long cssm = 0; // data structure for colon 2, seconds ones, second tens, and minute ones
+  int dots = now.second() % 2;
 
   // update blinking colons mask
-  chhm |= (unsigned long) colons << 31 | (unsigned long)colons << 30;
-  cssm |= (unsigned long) colons << 31 | (unsigned long)colons << 30;
+  cmhh |= (unsigned long) dots << 31 | (unsigned long)dots << 30;
+  cssm |= (unsigned long) dots << 31 | (unsigned long)dots << 30;
 
-  // update with current time data
-  // int ht = now.hour() / 10;
-  // int ho = now.hour() % 10;
-  // int mt = now.minute() / 10;
-  // int mo = now.minute() % 10;
-  // int st = now.second() / 10;
-  // int so = now.second() % 10;
-  //chhm |= (unsigned long) NixieArray[now.hour() % 10] << 30 | (unsigned long) NixieArray[now.hour() / 10] << 20 | (unsigned long) NixieArray[now.minute() / 10] << 10;
-  //cssm |= (unsigned long) NixieArray[now.second() % 10] << 30 | (unsigned long) NixieArray[now.second() / 10] << 20 | (unsigned long) NixieArray[now.minute() % 10] << 10;
-  
-  // Convert from 24hr to 12hr time
-  int hour = 0;
-  if (now.hour() == 0)
-  { 
-    hour = 12;
-  } 
-  else if (now.hour() > 12)
-  {
-    hour = now.hour() - 12;
-  }
-  else 
-  {
-    hour = now.hour();
-  }
-
-  chhm |= (unsigned long) NixieArray[now.minute() / 10] << 20 | (unsigned long) NixieArray[hour % 10] << 10 | (unsigned long) NixieArray[hour / 10];
+  cmhh |= (unsigned long) NixieArray[now.minute() / 10] << 20 | (unsigned long) NixieArray[hours24to12(now.hour()) % 10] << 10 | (unsigned long) NixieArray[hours24to12(now.hour()) / 10];
   cssm |= (unsigned long) NixieArray[now.second() % 10] << 20 | (unsigned long) NixieArray[now.second() / 10] << 10 | (unsigned long) NixieArray[now.minute() % 10];
 
   SPI.transfer(cssm>>24);
@@ -413,10 +425,10 @@ void updateTubes(const DateTime &now)
   SPI.transfer(cssm>>8);
   SPI.transfer(cssm);
 
-  SPI.transfer(chhm>>24);
-  SPI.transfer(chhm>>16);
-  SPI.transfer(chhm>>8);
-  SPI.transfer(chhm);
+  SPI.transfer(cmhh>>24);
+  SPI.transfer(cmhh>>16);
+  SPI.transfer(cmhh>>8);
+  SPI.transfer(cmhh);
 
   digitalWrite(LEpin, HIGH);
 
