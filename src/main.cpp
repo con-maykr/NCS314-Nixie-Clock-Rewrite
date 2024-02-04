@@ -7,7 +7,7 @@
 /***********************************************************************************************
 * * * * * * * * * * * * * * * * * * * * * * INCLUDES * * * * * * * * * * * * * * * * * * * * * *
 ************************************************************************************************/
-
+#define __DELAY_BACKWARD_COMPATIBLE__
 #include <Arduino.h>
 #include <SPI.h>
 #include <Wire.h>
@@ -16,6 +16,7 @@
 #include <EEPROM.h>
 #include <OneWire.h>
 #include <RTClib.h>
+#include <string.h>
 
 /***********************************************************************************************
  * * * * * * * * * * * * * * * * * * * * * * DEFINES * * * * * * * * * * * * * * * * * * * * * *
@@ -65,7 +66,9 @@ const unsigned int fpsLimit = 1000; // To set maximum update speed for digit fad
 const byte LEpin = 10; // Output enable for both HV5122 HV shift registers
 
 RTC_DS3231 rtc; // RTC object
-DateTime dt_now;
+// Not 100% sure these have to be global..?
+DateTime dt_now; // Hold the current time that we update
+DateTime dt_last; // Hold the last time (for multiplex fading)
 
 bool HV5222;
 
@@ -115,7 +118,11 @@ void setupTimers();
 
 // Tube operations
 void startupTubes();
-void updateTubes(const DateTime &now);
+void updateTubes(const DateTime &last, const DateTime &now);
+void antiBurn(const DateTime &now);
+void sendTime(int dots, const DateTime &now);
+void sendString(int dots, char *str);
+void fadeTubes();
 
 // Helper functions
 String PreZero(int digit);
@@ -184,6 +191,16 @@ void setup()
   // Quick wipe-across test of all nixie elements
   startupTubes();
 
+  // Test the anti burn-in on start
+  //dt_now = rtc.now();
+  //antiBurn(dt_now);
+
+  _delay_ms(250);
+
+  fadeTubes();
+
+  _delay_ms(500);
+
   // Start up the hardware timer(s) to be used for interrupts
   setupTimers();
 
@@ -193,7 +210,7 @@ void setup()
   analogWrite(BlueLedPin,50);
 
   // grab the current second to start comparing in the loop.
-  last_second = dt_now.second();
+  dt_last = rtc.now();
 
 }
 
@@ -203,15 +220,16 @@ void setup()
 void loop()
 {
   dt_now = rtc.now();
-  if (last_second != dt_now.second())
+  if (dt_last.second() != dt_now.second())
   {
-    updateTubes(dt_now);
-    last_second = dt_now.second();
+    updateTubes(dt_last, dt_now);
+    dt_last = rtc.now();
   }
 
-  if (dt_now.second() % 30 == 0)
+  // Simple anti-burn-in routine that wipes across all digits
+  if (dt_now.second() % 30 == 0) // do it every 30 sec
   {
-    startupTubes();
+    antiBurn(dt_now);
   }
 
   //Serial.print("Hours:");
@@ -405,13 +423,82 @@ ISR(TIMER4_COMPA_vect)
 /**
  * @brief Function that updates the state of the nixie tubes against the passed-in DateTime object. 
 */
-void updateTubes(const DateTime &now)
+void updateTubes(const DateTime &last, const DateTime &now)
 {
+  digitalWrite(LEpin, LOW);
+
+  sendTime(now.second() % 2, now);
+
+  digitalWrite(LEpin, HIGH);
+
+}
+
+/**
+ * @brief Cycles all tube elements simultaneously to prevent burn-in 
+*/
+void antiBurn(const DateTime &now)
+{
+
   digitalWrite(LEpin, LOW);
 
   unsigned long cmhh = 0; // data structure for colon 1, minute tens, hour ones, hour tens
   unsigned long cssm = 0; // data structure for colon 2, seconds ones, second tens, and minute ones
-  int dots = now.second() % 2;
+
+  // Fill an int array with the current time (easier to loop over an array)
+  int time[6] = { now.hour() / 10, 
+                  now.hour() % 10,
+                  now.minute() / 10,
+                  now.minute() % 10,
+                  now.second() / 10,
+                  now.second() % 10 };
+                
+  for (int num = 0; num < 10; num++)
+  {
+    for (int digit = 0; digit < 6; digit++) // [ |5| |4| : |3| |2| : |1| |0| ]
+    {
+      if (time[digit] == 9) // handle 0 --> 9 rollover
+      {
+        time[digit] = 0;
+      }
+      else
+      {
+        time[digit]++;
+      }
+    }
+
+    // Zero the nixie data structs otherwise we turn on all elements at once
+    cmhh = 0;
+    cssm = 0;
+
+    cmhh |= (unsigned long) NixieArray[time[2]] << 20 | (unsigned long) NixieArray[time[1]] << 10 | (unsigned long) NixieArray[time[0]];
+    cssm |= (unsigned long) NixieArray[time[5]] << 20 | (unsigned long) NixieArray[time[4]] << 10 | (unsigned long) NixieArray[time[3]];
+    
+    SPI.transfer(cssm>>24);
+    SPI.transfer(cssm>>16);
+    SPI.transfer(cssm>>8);
+    SPI.transfer(cssm);
+
+    SPI.transfer(cmhh>>24);
+    SPI.transfer(cmhh>>16);
+    SPI.transfer(cmhh>>8);
+    SPI.transfer(cmhh);
+
+    digitalWrite(LEpin, HIGH);
+    _delay_ms(75); // this all happens in <1 sec if this number is under 100ms
+    digitalWrite(LEpin, LOW);
+  }
+
+}
+
+/**
+ * @brief Fills the shift reg with the passed in time, does not light tubes. 
+*/
+void sendTime(int dots, const DateTime &now)
+{
+  unsigned long cmhh = 0; // data structure for colon 1, minute tens, hour ones, hour tens
+  unsigned long cssm = 0; // data structure for colon 2, seconds ones, second tens, and minute ones
+  //int dots = now.second() % 2; // easiest way to just blink the dots, on every odd second
+  //int dots = 0; // do something with this later to fade the dots?
 
   // update blinking colons mask
   cmhh |= (unsigned long) dots << 31 | (unsigned long)dots << 30;
@@ -429,7 +516,80 @@ void updateTubes(const DateTime &now)
   SPI.transfer(cmhh>>16);
   SPI.transfer(cmhh>>8);
   SPI.transfer(cmhh);
+}
 
+/**
+ * @brief Fills the shift reg with the passed in string (must be 6 ints), does not light tubes. 
+*/
+void sendString(int dots, char *str)
+{
+  unsigned long cmhh = 0; // data structure for colon 1, minute tens, hour ones, hour tens
+  unsigned long cssm = 0; // data structure for colon 2, seconds ones, second tens, and minute ones
+
+  // update colons mask
+  cmhh |= (unsigned long) dots << 31 | (unsigned long)dots << 30;
+  cssm |= (unsigned long) dots << 31 | (unsigned long)dots << 30;
+
+  // blanks digits with an 'x' in the passed in string - this seems inefficient? Oh well...
+  for (int i = 0; i < 3; i++)
+  {
+    if (str[i] == 'x')
+    {
+      cmhh |= (unsigned long) 0 << (10*i);
+    }
+    else
+    {
+      cmhh |= (unsigned long) NixieArray[str[i] - '0'] << (10*i);
+    }
+  }
+
+  for (int i = 3; i < 6; i++)
+  {
+    if (str[i] == 'x')
+    {
+      cssm |= (unsigned long) 0 << (10*(i-3));
+    }
+    else
+    {
+      cssm |= (unsigned long) NixieArray[str[i] - '0'] << (10*(i-3));
+    }
+  }
+
+  // cmhh |= (unsigned long) NixieArray[str[2] - '0'] << 20 | (unsigned long) NixieArray[str[1] - '0'] << 10 | (unsigned long) NixieArray[str[0] - '0'];
+  // cssm |= (unsigned long) NixieArray[str[5] - '0'] << 20 | (unsigned long) NixieArray[str[4] - '0'] << 10 | (unsigned long) NixieArray[str[3] - '0'];
+
+  SPI.transfer(cssm>>24);
+  SPI.transfer(cssm>>16);
+  SPI.transfer(cssm>>8);
+  SPI.transfer(cssm);
+
+  SPI.transfer(cmhh>>24);
+  SPI.transfer(cmhh>>16);
+  SPI.transfer(cmhh>>8);
+  SPI.transfer(cmhh);
+
+}
+
+/**
+ * @brief Test function to develop fading control. 
+*/
+void fadeTubes()
+{
+  int fadeDuration = 1000;
+
+  for (int pw = fadeDuration; pw > 0; pw = pw-1)
+  { 
+    sendString(1, (char*) "555555");
+    digitalWrite(LEpin, HIGH);
+    _delay_us(pw);
+    digitalWrite(LEpin, LOW);
+    sendString(1, (char*) "55555x");
+    digitalWrite(LEpin, HIGH);
+    _delay_us(fadeDuration-pw);
+    digitalWrite(LEpin, LOW);
+  }
+  
   digitalWrite(LEpin, HIGH);
+  sendString(1, (char*) "555556");
 
 }
