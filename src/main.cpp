@@ -121,8 +121,8 @@ void startupTubes();
 void updateTubes(const DateTime &last, const DateTime &now);
 void antiBurn(const DateTime &now);
 void sendTime(int dots, const DateTime &now);
-void sendString(int dots, char *str);
-void fadeTubes();
+void sendString(int dots, const char *str);
+void fadeTubes(const int *mask, const DateTime &dt);
 
 // Helper functions
 String PreZero(int digit);
@@ -195,12 +195,6 @@ void setup()
   //dt_now = rtc.now();
   //antiBurn(dt_now);
 
-  _delay_ms(250);
-
-  fadeTubes();
-
-  _delay_ms(500);
-
   // Start up the hardware timer(s) to be used for interrupts
   setupTimers();
 
@@ -220,14 +214,14 @@ void setup()
 void loop()
 {
   dt_now = rtc.now();
-  if (dt_last.second() != dt_now.second())
+  if (dt_now.second() != dt_last.second())
   {
     updateTubes(dt_last, dt_now);
     dt_last = rtc.now();
   }
 
-  // Simple anti-burn-in routine that wipes across all digits
-  if (dt_now.second() % 30 == 0) // do it every 30 sec
+  // "Slot machine" routine to prevent cathode poisoning
+  if ( (dt_now.second() % 30 == 0) && ( (dt_now.hour() < 7) | (dt_now.hour() > 22) )) // do it every 30 sec between 10pm and 7am
   {
     antiBurn(dt_now);
   }
@@ -427,6 +421,18 @@ void updateTubes(const DateTime &last, const DateTime &now)
 {
   digitalWrite(LEpin, LOW);
 
+  // create a mask {h, h, m, m, s, s} where 0 indicates a digit is about to change
+  int mask[6] = { 
+    (last.hour() / 10 == now.hour() / 10),
+    (last.hour() % 10 == now.hour() % 10),
+    (last.minute() / 10 == now.minute() / 10),
+    (last.minute() % 10 == now.minute() % 10),
+    (last.second() / 10 == now.second() / 10),
+    (last.second() % 10 == now.second() % 10) 
+    };
+
+  fadeTubes(mask, last);
+
   sendTime(now.second() % 2, now);
 
   digitalWrite(LEpin, HIGH);
@@ -504,8 +510,12 @@ void sendTime(int dots, const DateTime &now)
   cmhh |= (unsigned long) dots << 31 | (unsigned long)dots << 30;
   cssm |= (unsigned long) dots << 31 | (unsigned long)dots << 30;
 
-  cmhh |= (unsigned long) NixieArray[now.minute() / 10] << 20 | (unsigned long) NixieArray[hours24to12(now.hour()) % 10] << 10 | (unsigned long) NixieArray[hours24to12(now.hour()) / 10];
-  cssm |= (unsigned long) NixieArray[now.second() % 10] << 20 | (unsigned long) NixieArray[now.second() / 10] << 10 | (unsigned long) NixieArray[now.minute() % 10];
+  cmhh |= (unsigned long) NixieArray[now.minute() / 10] << 20 
+        | (unsigned long) NixieArray[hours24to12(now.hour()) % 10] << 10 
+        | (unsigned long) NixieArray[hours24to12(now.hour()) / 10];
+  cssm |= (unsigned long) NixieArray[now.second() % 10] << 20 
+        | (unsigned long) NixieArray[now.second() / 10] << 10 
+        | (unsigned long) NixieArray[now.minute() % 10];
 
   SPI.transfer(cssm>>24);
   SPI.transfer(cssm>>16);
@@ -519,9 +529,9 @@ void sendTime(int dots, const DateTime &now)
 }
 
 /**
- * @brief Fills the shift reg with the passed in string (must be 6 ints), does not light tubes. 
+ * @brief Fills the shift reg with the passed in string (must be 6 ints, or x for digit off), does not light tubes. 
 */
-void sendString(int dots, char *str)
+void sendString(int dots, const char *str)
 {
   unsigned long cmhh = 0; // data structure for colon 1, minute tens, hour ones, hour tens
   unsigned long cssm = 0; // data structure for colon 2, seconds ones, second tens, and minute ones
@@ -555,8 +565,12 @@ void sendString(int dots, char *str)
     }
   }
 
-  // cmhh |= (unsigned long) NixieArray[str[2] - '0'] << 20 | (unsigned long) NixieArray[str[1] - '0'] << 10 | (unsigned long) NixieArray[str[0] - '0'];
-  // cssm |= (unsigned long) NixieArray[str[5] - '0'] << 20 | (unsigned long) NixieArray[str[4] - '0'] << 10 | (unsigned long) NixieArray[str[3] - '0'];
+  // cmhh |= (unsigned long) NixieArray[str[2] - '0'] << 20 
+  //       | (unsigned long) NixieArray[str[1] - '0'] << 10 
+  //       | (unsigned long) NixieArray[str[0] - '0'];
+  // cssm |= (unsigned long) NixieArray[str[5] - '0'] << 20 
+  //       | (unsigned long) NixieArray[str[4] - '0'] << 10 
+  //       | (unsigned long) NixieArray[str[3] - '0'];
 
   SPI.transfer(cssm>>24);
   SPI.transfer(cssm>>16);
@@ -573,23 +587,41 @@ void sendString(int dots, char *str)
 /**
  * @brief Test function to develop fading control. 
 */
-void fadeTubes()
+void fadeTubes(const int *mask, const DateTime &dt)
 {
-  int fadeDuration = 1000;
+  int fadeDuration = 800;
+  char str[6] = { 
+    (hours24to12(dt.hour()) / 10) + '0',
+    (hours24to12(dt.hour()) % 10) + '0',
+    (dt.minute() / 10) + '0',
+    (dt.minute() % 10) + '0',
+    (dt.second() / 10) + '0',
+    (dt.second() % 10) + '0'
+    };
+
+  for (int i = 0; i < 6; i++)
+  {
+    if (mask[i] == 0)
+    {
+      str[i] = 'x';
+    }
+  }
 
   for (int pw = fadeDuration; pw > 0; pw = pw-1)
   { 
-    sendString(1, (char*) "555555");
+    sendTime(dt.second() % 2, dt); // send the  time
+
     digitalWrite(LEpin, HIGH);
     _delay_us(pw);
     digitalWrite(LEpin, LOW);
-    sendString(1, (char*) "55555x");
+
+    sendString(dt.second() % 2, str); // send the time with mask applied
+
     digitalWrite(LEpin, HIGH);
     _delay_us(fadeDuration-pw);
     digitalWrite(LEpin, LOW);
   }
   
-  digitalWrite(LEpin, HIGH);
-  sendString(1, (char*) "555556");
 
 }
+
