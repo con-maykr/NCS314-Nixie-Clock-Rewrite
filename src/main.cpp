@@ -289,6 +289,63 @@ void setupTimers()
 }
 
 /**
+ * @brief Apphend a leading zero to an int if it is one digit. 
+*/
+String PreZero(int digit)
+{
+  digit = abs(digit);
+  if (digit < 10) return String("0") + String(digit);
+  else return String(digit);
+}
+
+/**
+ * @brief Convert 24 hour time format to 12 hour format (loses AM/PM data)
+*/
+int hours24to12(int hours24)
+{
+  return hours24 == 0 ? 12 : hours24 <= 12 ? hours24 : hours24 - 12;
+}
+
+/**
+ * @brief Prints full time and data data, formatted, over serial. 
+*/
+void showDateTime()
+{
+  DateTime dt = rtc.now();
+
+  Serial.print((dt.year()), DEC);
+  Serial.print('/');
+  Serial.print(PreZero(dt.month()));
+  Serial.print('/');
+  Serial.print(PreZero(dt.day()));
+  Serial.print(' ');
+  Serial.print(PreZero(dt.hour()));
+  Serial.print(':');
+  Serial.print(PreZero(dt.minute()));
+  Serial.print(':');
+  Serial.print(PreZero(dt.second()));
+
+  Serial.println();
+}
+
+/**
+ * @brief ISR triggered by hardware timer 4 overload. 
+*/
+ISR(TIMER4_COMPA_vect)
+{
+  //cli();
+  //DateTime now = rtc.now();
+  //updateTubes(now);
+  //showDateTime();
+  //colons = !colons;
+  //dt_now = rtc.now();
+  //Serial.print("Colons: ");
+  //Serial.println(colons);
+  //sei();
+  
+}
+
+/**
  * @brief Quickly test all tube elements. 
 */
 void startupTubes()
@@ -358,63 +415,6 @@ void startupTubes()
 }
 
 /**
- * @brief Apphend a leading zero to an int if it is one digit. 
-*/
-String PreZero(int digit)
-{
-  digit = abs(digit);
-  if (digit < 10) return String("0") + String(digit);
-  else return String(digit);
-}
-
-/**
- * @brief Convert 24 hour time format to 12 hour format (loses AM/PM data)
-*/
-int hours24to12(int hours24)
-{
-  return hours24 == 0 ? 12 : hours24 <= 12 ? hours24 : hours24 - 12;
-}
-
-/**
- * @brief Prints full time and data data, formatted, over serial. 
-*/
-void showDateTime()
-{
-  DateTime dt = rtc.now();
-
-  Serial.print((dt.year()), DEC);
-  Serial.print('/');
-  Serial.print(PreZero(dt.month()));
-  Serial.print('/');
-  Serial.print(PreZero(dt.day()));
-  Serial.print(' ');
-  Serial.print(PreZero(dt.hour()));
-  Serial.print(':');
-  Serial.print(PreZero(dt.minute()));
-  Serial.print(':');
-  Serial.print(PreZero(dt.second()));
-
-  Serial.println();
-}
-
-/**
- * @brief ISR triggered by hardware timer 4 overload. 
-*/
-ISR(TIMER4_COMPA_vect)
-{
-  //cli();
-  //DateTime now = rtc.now();
-  //updateTubes(now);
-  //showDateTime();
-  //colons = !colons;
-  //dt_now = rtc.now();
-  //Serial.print("Colons: ");
-  //Serial.println(colons);
-  //sei();
-  
-}
-
-/**
  * @brief Function that updates the state of the nixie tubes against the passed-in DateTime object. 
 */
 void updateTubes(const DateTime &last, const DateTime &now)
@@ -435,7 +435,8 @@ void updateTubes(const DateTime &last, const DateTime &now)
 
   sendTime(now.second() % 2, now);
 
-  digitalWrite(LEpin, HIGH);
+  //digitalWrite(LEpin, HIGH);
+  analogWrite(LEpin, 200); // Keeps the brightness consistent with the PWM inherent to fade-out multiplexing
 
 }
 
@@ -585,7 +586,7 @@ void sendString(int dots, const char *str)
 }
 
 /**
- * @brief Test function to develop fading control. 
+ * @brief Fades out of changing digits. 
 */
 void fadeTubes(const int *mask, const DateTime &dt)
 {
