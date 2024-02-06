@@ -14,7 +14,7 @@
 #include <ClickButton.h>
 #include <TimeLib.h>
 #include <EEPROM.h>
-//#include <OneWire.h>
+#include <OneWire.h>
 #include <RTClib.h>
 #include <string.h>
 
